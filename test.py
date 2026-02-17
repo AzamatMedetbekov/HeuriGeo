@@ -17,7 +17,7 @@
 
 from ddar import DDAR
 from parse import AGProblem
-
+from hageo_heuristics import get_hageo_candidates
 
 problems_without_aux = {
     "2000_p1": (
@@ -489,28 +489,65 @@ auxiliary points. This is not a full AlphaGeometry system, only a test of the lo
 
 
 def print_problem_and_solve(problems_dict: dict[str, str]) -> None:
-  """Prints problem ID and its proving status."""
-  for name, pstring in problems_dict.items():
-    print("Problem:", name)
-    problem = AGProblem.parse(pstring)
-    ddar = DDAR(problem.points)
-    for pred in problem.preds:
-      ddar.force_pred(pred)
-    ddar.deduction_closure()
-    if ddar.check_pred(problem.goal):
-      print(" Proven :-)")
-    else:
-      print()
-      print()
-      print("!!! Problem not solved, missing an auxiliary point?")
-    print()
+    """Prints problem ID and its proving status."""
+    for name, pstring in problems_dict.items():
+        print(f"Problem: {name}")
+
+        # 1. Parse and Initial Run
+        problem = AGProblem.parse(pstring)
+        ddar = DDAR(problem.points)
+        # Force initial predicates
+        for pred in problem.preds:
+            ddar.force_pred(pred)
+        ddar.deduction_closure()
+
+        if ddar.check_pred(problem.goal):
+            print("  Proven (Base) :-)")
+            print()
+            continue
+
+        print("  Base failed. Running HAGeo Heuristics...")
+
+        # 2. Generate Candidates based on the geometry found so far
+        # We pass ddar.lines and ddar.circles so we can check if points land on them
+        candidates = get_hageo_candidates(problem.points, ddar.lines, ddar.circles)
+        print(f"  Generated {len(candidates)} candidate auxiliary points.")
+
+        # 3. K-Attempts Loop (HAGeo Section 4.5)
+        solved = False
+        # Shuffle to simulate "Random Select" from pipeline
+        import random
+
+        random.shuffle(candidates)
+
+        # Try up to K=10 top candidates
+        for i, new_pt in enumerate(candidates[:10]):
+            # Construct new problem state
+            new_points = problem.points + [new_pt]
+
+            try:
+                ddar_aux = DDAR(new_points)
+                for pred in problem.preds:
+                    ddar_aux.force_pred(pred)
+                ddar_aux.deduction_closure(progress_dot=False)
+
+                if ddar_aux.check_pred(problem.goal):
+                    print(f"  Proven with auxiliary point: {new_pt.name} :-)")
+                    solved = True
+                    break
+            except Exception:
+                continue  # Skip unstable points
+
+        if not solved:
+            print("  Failed after heuristic attempts.")
+        print()
 
 
 if __name__ == "__main__":
-  # Easier problems that can be solved without auxiliary points.
-  print(explanation_without_aux)
-  print_problem_and_solve(problems_without_aux)
+    # Easier problems that can be solved without auxiliary points.
+    print(explanation_without_aux)
+    print_problem_and_solve(problems_without_aux)
 
-  # Harder problems supplemented by auxiliary points found by a language model.
-  print(explanation_with_aux)
-  print_problem_and_solve(problems_with_aux)
+    # Harder problems supplemented by auxiliary points found by a language model.
+    print(explanation_with_aux)
+    print_problem_and_solve(problems_with_aux)
