@@ -23,7 +23,11 @@ from typing import Optional
 
 from ddar import DDAR
 from parse import AGProblem
-from heuri_heuristics import get_heuristic_candidates
+from heuri_heuristics import (
+    get_heuristic_candidates,
+    get_weighted_candidate,
+    inject_predicates,
+)
 from bridge import extract_lines_and_circles
 
 problems_without_aux = {
@@ -595,14 +599,132 @@ def get_heuristic_type(candidate_name):
         return "Unknown"
 
 
-def solve_with_multi_round(problem, K=50, N=6, timeout=30.0):
+def diagnose_problem(name, pstring):
+    """Diagnose candidate generation for a single problem without running full solve."""
+    print(f"\n{'=' * 70}")
+    print(f"DIAGNOSIS: {name}")
+    print(f"{'=' * 70}")
+
+    try:
+        problem = AGProblem.parse(pstring)
+    except Exception as e:
+        print(f"PARSE ERROR: {e}")
+        return
+
+    print(f"Points: {len(problem.points)}")
+    print(f"Predicates: {len(problem.preds)}")
+    print(f"Goal: {problem.goal}")
+
+    # Run DDAR to get lines and circles
+    print("\nRunning DDAR deduction...")
+    try:
+        ddar = DDAR(problem.points)
+        for pred in problem.preds:
+            ddar.force_pred(pred)
+        ddar.deduction_closure(progress_dot=False)
+        print(f"Deduction complete.")
+    except Exception as e:
+        print(f"DDAR ERROR: {e}")
+        return
+
+    # Extract lines and circles
+    lines, circles = extract_lines_and_circles(ddar)
+    print(f"Lines found: {len(lines)}")
+    print(f"Circles found: {len(circles)}")
+
+    # Generate candidates with diagnose mode
+    print("\nGenerating heuristic candidates (with H2 audit)...")
+    candidates, h2_audit = get_heuristic_candidates(
+        problem.points, lines, circles, verbose=True, diagnose_mode=True
+    )
+
+    # Analyze candidate types
+    type_counts = {"H1": 0, "H2": 0, "H3": 0, "H4": 0, "H5": 0}
+    for cand, _ in candidates:
+        h_type = get_heuristic_type(cand.name)
+        if h_type in type_counts:
+            type_counts[h_type] += 1
+
+    print(f"\nCandidate Type Breakdown:")
+    total = len(candidates)
+    for h_type, count in type_counts.items():
+        pct = (count / total * 100) if total > 0 else 0
+        print(f"  {h_type}: {count} ({pct:.1f}%)")
+    print(f"  Total: {total}")
+
+    # Per-round analysis simulation
+    print(f"\nPer-Round Analysis (simulating up to 6 rounds):")
+
+    # Simulate multiple rounds to show how candidates evolve
+    current_points = list(problem.points)
+    current_preds = list(problem.preds)
+
+    for round_num in range(6):
+        # Run DDAR on current state
+        try:
+            ddar = DDAR(current_points)
+            for pred in current_preds:
+                ddar.force_pred(pred)
+            ddar.deduction_closure(progress_dot=False)
+
+            lines, circles = extract_lines_and_circles(ddar)
+            round_candidates = get_heuristic_candidates(
+                current_points, lines, circles, verbose=False, diagnose_mode=False
+            )
+
+            # Count by type
+            round_type_counts = {"H1": 0, "H2": 0, "H3": 0, "H4": 0, "H5": 0}
+            for cand, _ in round_candidates:
+                h_type = get_heuristic_type(cand.name)
+                if h_type in round_type_counts:
+                    round_type_counts[h_type] += 1
+
+            print(
+                f"  Round {round_num + 1}: {len(round_candidates)} candidates "
+                f"(H1:{round_type_counts['H1']} H2:{round_type_counts['H2']} "
+                f"H3:{round_type_counts['H3']} H4:{round_type_counts['H4']} H5:{round_type_counts['H5']})"
+            )
+
+            if not round_candidates:
+                print(f"    No more candidates available.")
+                break
+
+            # Simulate adding a candidate for next round
+            # Pick first candidate to simulate evolution
+            chosen, new_preds = round_candidates[0]
+            current_points.append(chosen)
+            current_preds.extend(new_preds)
+
+        except Exception as e:
+            print(f"  Round {round_num + 1}: ERROR - {e}")
+            break
+
+    print(f"\n{'=' * 70}")
+    print("Diagnosis complete.")
+    print(f"{'=' * 70}\n")
+
+
+def copy_problem_shallow(problem):
+    """Create a shallow copy of the problem, keeping the same AGPoint objects."""
+    new_problem = AGProblem(
+        points=list(problem.points),  # Shallow copy - same point objects
+        preds=list(problem.preds),  # Shallow copy - same pred objects
+        goal=problem.goal,
+    )
+    return new_problem
+
+
+def solve_with_multi_round(problem, K=50, N=6, timeout=30.0, use_weighted=True):
     """
     K attempts, each attempt adds up to N auxiliary points.
     Returns (status, aux_points_used, heuristic_type, candidate_name) or (None, [], None, None) if unsolved.
     """
+    # Track all candidates tried across ALL attempts for diversity
+    tried_candidates = set()
+
     for attempt in range(K):
-        # Deep copy the problem for this attempt
-        current_problem = copy.deepcopy(problem)
+        # Shallow copy the problem for this attempt (preserve point object identity)
+        current_problem = copy_problem_shallow(problem)
         aux_points_used = []
 
         # We need to track the last added candidate info to report it if solved
@@ -641,14 +763,26 @@ def solve_with_multi_round(problem, K=50, N=6, timeout=30.0):
             if not candidates:
                 break  # no candidates, stop this attempt
 
-            # Pick one candidate randomly (different seed per attempt/round)
+            # Pick one candidate using weighted selection or random choice
             random.seed(attempt * 100 + round_num)
-            chosen_tuple = random.choice(candidates)
+
+            if use_weighted:
+                chosen_tuple = get_weighted_candidate(
+                    candidates, tried_candidates, weight_untried=3, weight_tried=1
+                )
+            else:
+                chosen_tuple = random.choice(candidates)
 
             if isinstance(chosen_tuple, tuple):
                 chosen, new_preds = chosen_tuple
             else:
                 chosen, new_preds = chosen_tuple, []
+
+            # Track this candidate as tried
+            tried_candidates.add(chosen.name)
+
+            # Get heuristic type and inject proper predicates
+            heuristic_type = get_heuristic_type(chosen.name)
 
             # Add chosen point + its predicates to problem
             current_problem.points.append(chosen)
@@ -656,7 +790,7 @@ def solve_with_multi_round(problem, K=50, N=6, timeout=30.0):
 
             aux_points_used.append(chosen.name)
             last_candidate_name = chosen.name
-            last_heuristic_type = get_heuristic_type(chosen.name)
+            last_heuristic_type = heuristic_type
 
         # Final check after all N rounds
 
@@ -871,8 +1005,37 @@ if __name__ == "__main__":
         default=50,
         help="Number of attempts (K)",
     )
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Run diagnosis mode on hard problems (shows candidate breakdown per problem)",
+    )
+    parser.add_argument(
+        "--problem",
+        type=str,
+        default=None,
+        help="Specific problem to diagnose (use with --diagnose)",
+    )
     args = parser.parse_args()
 
-    run_test_suite(
-        quick=args.quick, hard=args.hard, rounds=args.rounds, attempts=args.attempts
-    )
+    if args.diagnose:
+        # Diagnose mode - analyze candidate generation
+        all_problems = {**problems_without_aux, **hard_problems}
+
+        if args.problem:
+            if args.problem in all_problems:
+                diagnose_problem(args.problem, all_problems[args.problem])
+            else:
+                print(f"Problem '{args.problem}' not found.")
+                print(f"Available problems: {list(all_problems.keys())}")
+        else:
+            # Diagnose all hard problems
+            print("\n" + "=" * 70)
+            print("DIAGNOSIS MODE: Analyzing hard problems")
+            print("=" * 70)
+            for name, pstring in hard_problems.items():
+                diagnose_problem(name, pstring)
+    else:
+        run_test_suite(
+            quick=args.quick, hard=args.hard, rounds=args.rounds, attempts=args.attempts
+        )

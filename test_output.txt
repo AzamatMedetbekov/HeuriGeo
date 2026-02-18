@@ -1,0 +1,6 @@
+Running in HARD mode (6 difficult problems, K=20, N=4)
+
+Running 6 problems (Rounds=4, Attempts=20)...
+======================================================================
+  Solving 2004_p5_hard... DDAR_FAILED Trying K=20 attempts (N=4 rounds each): UNSOLVED
+  Solving 2005_p5_hard... 
