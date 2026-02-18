@@ -13,11 +13,18 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Test AlphaGeometry's logic core on IMO problems."""
+"""Test AlphaGeometry's logic core on IMO problems with heuristic loop."""
+
+import argparse
+import random
+import time
+import copy
+from typing import Optional
 
 from ddar import DDAR
 from parse import AGProblem
 from heuri_heuristics import get_heuristic_candidates
+from bridge import extract_lines_and_circles
 
 problems_without_aux = {
     "2000_p1": (
@@ -230,6 +237,69 @@ problems_without_aux = {
         " cong c t e t, eqangle d b d t b t b d, eqangle e c e t c t c e,"
         " eqangle b t b a e a e t, coll b a p, coll c d p, coll b a q, coll c t"
         " q, coll c d r, coll e a r, coll d t s, coll e a s ? cyclic p q r s"
+    ),
+}
+
+# Hard problems - requiring auxiliary points
+hard_problems = {
+    # Crippled versions of existing problems (remove one predicate to make harder)
+    "2004_p5_hard": (
+        "a@0.0_0.0 = ; b@1.0_0.0 = ; c@-0.24938856912238253_0.6547036984730146"
+        " = ; o@0.5_0.5653092857516873 = ;"
+        " d@0.7037641142060632_1.2919830600953754 = ;"
+        " p@1.9602382123421425_1.1215406301036281 = cong a o b o, cong b o c o,"
+        " cong a o o d, eqangle b a b d b p b c ? cong"
+        " a p c p"
+    ),
+    "2005_p5_hard": (
+        "a@0.0_0.0 = ; b@1.0_0.0 = ; c@-1.1593575747631677_1.1505876678915776 ="
+        " ; d@0.934132499882376_2.261431756621179 = ;"
+        " e@-0.5470501721306618_0.8243270454446661 = ;"
+        " f@0.264882598140477_0.6412515561621368 = ;"
+        " p@1.029766570035929_-1.0219769483391574 = ;"
+        " q@0.9860589134913976_0.4786399316211652 = ;"
+        " r@-0.9139754938383713_0.9070617683939022 = cong a d b c, coll b c e,"
+        " coll a d f, cong b e d f, coll a c p, coll b d p, coll b d q, coll e"
+        " f q, coll a c r, coll e f r ? cyclic p"
+        " q r"
+    ),
+    "2003_p4_hard": (
+        "a@0.0_0.0 = ; b@1.0_0.0 = ; c@1.3505524882018327_1.3661895740316943 ="
+        " ; o@0.5_0.8563648602858344 = ;"
+        " b1@-0.20522354597272877_1.5535165827523483 = ;"
+        " d1@1.2052235459727287_0.15921313781932053 = ;"
+        " x@0.560291280698391_0.566778494577556 = ;"
+        " d@-0.4323646433488392_1.1940880394805242 = ;"
+        " p@1.1989859866653991_0.7754975061085783 = ;"
+        " q@0.38331067165828_0.3877487530542891 = ; r@-0.4323646433488391_-0.0"
+        " = cong a o b o, cong b o c o, cong a o o b1, cong a b1 c b1, eqangle"
+        " c a c b1 a b1 a c, cong a o o d1, cong a d1 c d1, eqangle c a c d1 a"
+        " d1 a c, coll a c x, coll b b1 x, coll d1 x d, cong a o o d, coll b c"
+        " p, perp b c d p, coll a c q, perp a c d q, coll a b r ?"
+        " cong p q q r"
+    ),
+    # Classic geometry problems requiring auxiliary points
+    # Simson Line omitted due to timeout issues
+    # Midpoint theorem: M, N midpoints of AC, BC => MN || AB
+    # We omit the 'midpoint' predicates - heuristics should find them
+    "midpoint_theorem": (
+        "a@0.0_0.0 = ; b@4.0_0.0 = ; c@2.0_3.0 = ;"
+        " mid_ac@1.0_1.5 = ; mid_bc@3.0_1.5 = "
+        " coll mid_ac a c, coll mid_bc b c"
+        " ? para mid_ac mid_bc a b"
+    ),
+    # Angle bisector theorem: D on BC where AD bisects angle A => AB/AC = BD/DC
+    # We omit the angle bisector predicate - heuristics should find D
+    "angle_bisector_thm": (
+        "a@0.0_0.0 = ; b@4.0_0.0 = ; c@2.0_3.0 = ;"
+        " d@2.0_0.0 = coll d b c"
+        " ? eqratio d b d c a b a c"
+    ),
+    "trapezoid_midline": (
+        "a@0.0_0.0 = ; b@4.0_0.0 = ; c@3.0_2.0 = ; d@1.0_2.0 = ;"
+        " m@0.5_1.0 = ; n@3.5_1.0 = "
+        " para a b c d, coll m a d, cong a m m d, coll n b c, cong b n n c"
+        " ? para m n a b"
     ),
 }
 
@@ -478,204 +548,331 @@ problems_with_aux = {
     ),
 }
 
-explanation_without_aux = """
-We run the logical core DDAR on some easier IMO problems that can be solved by DDAR alone.
-"""
 
-explanation_with_aux = """
-We run the logical core DDAR on some challenging IMO problems, with manually provided
-auxiliary points. This is not a full AlphaGeometry system, only a test of the logical core.
-"""
+def run_ddar_with_timeout(problem, timeout_secs=30.0):
+    """Run DDAR on a problem with a timeout."""
+    import threading
+
+    result = {"solved": False, "ddar": None, "error": None}
+
+    def ddar_worker():
+        try:
+            ddar = DDAR(problem.points)
+            for pred in problem.preds:
+                ddar.force_pred(pred)
+            ddar.deduction_closure(progress_dot=False)
+            result["ddar"] = ddar
+            result["solved"] = ddar.check_pred(problem.goal)
+        except Exception as e:
+            result["error"] = str(e)
+
+    thread = threading.Thread(target=ddar_worker)
+    thread.start()
+    thread.join(timeout=timeout_secs)
+
+    if thread.is_alive():
+        return False, None
+
+    if result["error"]:
+        return False, None
+
+    return result["solved"], result["ddar"]
 
 
-def score_candidate(ddar, candidate, problem_points):
+def get_heuristic_type(candidate_name):
+    """Extract heuristic type (H1/H2/H3/H4/H5) from candidate name."""
+    if candidate_name.startswith("H_inter_LL"):
+        return "H1"
+    elif candidate_name.startswith("H_inter_LC"):
+        return "H2"
+    elif candidate_name.startswith("H_mid"):
+        return "H3"
+    elif candidate_name.startswith("H_ref"):
+        return "H4"
+    elif candidate_name.startswith("H_foot"):
+        return "H5"
+    else:
+        return "Unknown"
+
+
+def solve_with_multi_round(problem, K=50, N=6, timeout=30.0):
     """
-    Score a candidate based on its potential geometric utility.
-    Higher scores indicate candidates more likely to lead to a proof.
+    K attempts, each attempt adds up to N auxiliary points.
+    Returns (status, aux_points_used, heuristic_type, candidate_name) or (None, [], None, None) if unsolved.
     """
-    score = 0
+    for attempt in range(K):
+        # Deep copy the problem for this attempt
+        current_problem = copy.deepcopy(problem)
+        aux_points_used = []
 
-    # 1. Prefer candidates that land on multiple existing geometric objects
-    lines_hit = sum(
-        1 for line in ddar.lines if line.value.distance(candidate.value) < 1e-4
-    )
-    circles_hit = sum(
-        1 for circle in ddar.circles if circle.value.distance(candidate.value) < 1e-4
-    )
-    score += (lines_hit + circles_hit) * 10  # Being on multiple objects is valuable
+        # We need to track the last added candidate info to report it if solved
+        last_candidate_name = None
+        last_heuristic_type = None
 
-    # 2. Prefer candidates that create new collinearities
-    for line in ddar.lines:
-        if line.value.distance(candidate.value) < 1e-4:
-            # Check if candidate is between existing points on this line
-            for i, p1 in enumerate(line.points):
-                for p2 in line.points[i + 1 :]:
-                    if (
-                        p1.value[0] < candidate.value[0] < p2.value[0]
-                        or p2.value[0] < candidate.value[0] < p1.value[0]
-                    ):
-                        score += 5  # Betweenness is often useful
-
-    # 3. Prefer candidates with heuristic type priority
-    if "H_mid" in candidate.name:
-        score += 3  # Midpoints are often useful
-    elif "H_inter_LC" in candidate.name:
-        score += 4  # Line-circle intersections create new relationships
-    elif "H_foot" in candidate.name:
-        score += 2  # Perpendicular feet
-    elif "H_ref" in candidate.name:
-        score += 1  # Reflections
-
-    return score
-
-
-def filter_redundant_candidates(candidates, existing_points, min_dist=1e-4):
-    """Filter out candidates that are too close to existing points or each other."""
-    filtered = []
-    seen_positions = [p.value for p in existing_points]
-
-    for cand in candidates:
-        is_redundant = False
-        for pos in seen_positions:
-            if ng.distance(cand.value, pos) < min_dist:
-                is_redundant = True
-                break
-        if not is_redundant:
-            filtered.append(cand)
-            seen_positions.append(cand.value)
-
-    return filtered
-
-
-def print_problem_and_solve(problems_dict: dict[str, str]) -> None:
-    """Prints problem ID and its proving status."""
-    import random
-
-    for name, pstring in problems_dict.items():
-        print(f"Problem: {name}")
-
-        # 1. Parse and Initial Run
-        problem = AGProblem.parse(pstring)
-        ddar = DDAR(problem.points)
-        # Force initial predicates
-        for pred in problem.preds:
-            ddar.force_pred(pred)
-        ddar.deduction_closure()
-
-        if ddar.check_pred(problem.goal):
-            print("  Proven (Base) :-)")
-            print()
-            continue
-
-        print("  Base failed. Running HAGeo Heuristics...")
-
-        # 2. Generate and Score Candidates for Round 1
-        candidates_r1 = get_hageo_candidates(problem.points, ddar.lines, ddar.circles)
-
-        # Filter redundant candidates
-        candidates_r1 = filter_redundant_candidates(candidates_r1, problem.points)
-
-        if not candidates_r1:
-            print("  No valid candidates generated.")
-            print()
-            continue
-
-        # Score and sort candidates by geometric utility
-        scored_candidates = [
-            (score_candidate(ddar, c, problem.points), c) for c in candidates_r1
-        ]
-        scored_candidates.sort(reverse=True)
-
-        print(f"  Generated {len(candidates_r1)} candidate auxiliary points.")
-
-        # 3. N-Rounds K-Attempts Loop (Depth-2 Search with Optimizations)
-        solved = False
-        attempted_pairs = set()  # Track attempted pairs to avoid duplicates
-
-        # Configurable parameters (can be tuned based on problem difficulty)
-        MAX_ROUND1 = min(10, len(scored_candidates))  # Adaptive limit
-        MAX_ROUND2 = 3  # Limit combinatorial explosion
-
-        for score1, pt1 in scored_candidates[:MAX_ROUND1]:
+        for round_num in range(N):
+            # Run DDAR on current state
+            solved, ddar = run_ddar_with_timeout(current_problem, timeout)
             if solved:
-                break
-
-            # --- ROUND 1: Try single point ---
-            try:
-                ddar_r1 = DDAR(problem.points + [pt1])
-                for pred in problem.preds:
-                    ddar_r1.force_pred(pred)
-                ddar_r1.deduction_closure(progress_dot=False)
-
-                if ddar_r1.check_pred(problem.goal):
-                    print(
-                        f"  Proven with 1 auxiliary point: {pt1.name} (score: {score1}) :-)"
-                    )
-                    solved = True
-                    break
-
-                # --- ROUND 2: If Round 1 fails, go deeper ---
-                # Generate new candidates based on geometry discovered in Round 1
-                candidates_r2 = get_hageo_candidates(
-                    problem.points + [pt1], ddar_r1.lines, ddar_r1.circles
+                return (
+                    "heuristic",
+                    aux_points_used,
+                    last_heuristic_type,
+                    last_candidate_name,
                 )
 
-                # Filter: must be new compared to Round 1 candidates
-                candidates_r2 = filter_redundant_candidates(
-                    candidates_r2, problem.points + [pt1]
-                )
+            # If not solved, try to add an auxiliary point
+            if ddar:
+                lines, circles = extract_lines_and_circles(ddar)
+            else:
+                # DDAR timed out or failed, try fresh DDAR for extraction (rare but safe)
+                try:
+                    fresh_ddar = DDAR(current_problem.points)
+                    for pred in current_problem.preds:
+                        fresh_ddar.force_pred(pred)
+                    fresh_ddar.deduction_closure(progress_dot=False)
+                    lines, circles = extract_lines_and_circles(fresh_ddar)
+                except Exception:
+                    break  # Extraction failed, abort this attempt
 
-                if not candidates_r2:
-                    continue
-
-                # Score Round 2 candidates in context of Round 1
-                scored_r2 = [
-                    (score_candidate(ddar_r1, c, problem.points + [pt1]), c)
-                    for c in candidates_r2
-                ]
-                scored_r2.sort(reverse=True)
-
-                # Try top candidates in Round 2
-                for score2, pt2 in scored_r2[:MAX_ROUND2]:
-                    # Skip if this pair was already attempted
-                    pair_key = tuple(sorted([pt1.name, pt2.name]))
-                    if pair_key in attempted_pairs:
-                        continue
-                    attempted_pairs.add(pair_key)
-
-                    try:
-                        # Optimization: Build on Round 1 state instead of recomputing
-                        points_r2 = problem.points + [pt1, pt2]
-                        ddar_r2 = DDAR(points_r2)
-                        for pred in problem.preds:
-                            ddar_r2.force_pred(pred)
-                        ddar_r2.deduction_closure(progress_dot=False)
-
-                        if ddar_r2.check_pred(problem.goal):
-                            print(
-                                f"  Proven with 2 auxiliary points: {pt1.name} (score: {score1}) and {pt2.name} (score: {score2}) :-)"
-                            )
-                            solved = True
-                            break
-
-                    except Exception:
-                        continue  # Skip unstable configurations
-
-            except Exception:
-                continue  # Skip unstable configurations
-
-        if not solved:
-            print(
-                f"  Failed after Depth-2 search (attempted {len(attempted_pairs)} unique pairs)."
+            candidates = get_heuristic_candidates(
+                current_problem.points, lines, circles
             )
-        print()
+
+            if not candidates:
+                break  # no candidates, stop this attempt
+
+            # Pick one candidate randomly (different seed per attempt/round)
+            random.seed(attempt * 100 + round_num)
+            chosen_tuple = random.choice(candidates)
+
+            if isinstance(chosen_tuple, tuple):
+                chosen, new_preds = chosen_tuple
+            else:
+                chosen, new_preds = chosen_tuple, []
+
+            # Add chosen point + its predicates to problem
+            current_problem.points.append(chosen)
+            current_problem.preds.extend(new_preds)
+
+            aux_points_used.append(chosen.name)
+            last_candidate_name = chosen.name
+            last_heuristic_type = get_heuristic_type(chosen.name)
+
+        # Final check after all N rounds
+
+        solved, _ = run_ddar_with_timeout(current_problem, timeout)
+
+        if solved:
+            return (
+                "heuristic",
+                aux_points_used,
+                last_heuristic_type,
+                last_candidate_name,
+            )
+
+    return (None, [], None, None)
+
+
+def solve_problem(name, pstring, max_attempts=50, max_rounds=6, timeout_secs=30.0):
+    """Solve a single problem with DDAR + multi-round heuristic retry loop."""
+    print(f"  Solving {name}...", end=" ", flush=True)
+
+    result = {
+        "name": name,
+        "status": "unsolved",
+        "heuristic_type": None,
+        "candidate_name": None,
+        "candidates_tried": 0,  # In multi-round, this is attempts
+        "rounds_needed": 0,
+        "aux_points": [],
+    }
+
+    try:
+        problem = AGProblem.parse(pstring)
+    except Exception:
+        print("PARSE_ERROR")
+        return result
+
+    # Step 1: Try DDAR alone
+    solved, ddar = run_ddar_with_timeout(problem, timeout_secs)
+    if solved:
+        print("SOLVED_BY_DDAR")
+        result["status"] = "ddar"
+        return result
+
+    if ddar is None:
+        print("DDAR_TIMEOUT", end=" ")
+    else:
+        print("DDAR_FAILED", end=" ")
+
+    # Step 2: Multi-round heuristic search
+    print(f"Trying K={max_attempts} attempts (N={max_rounds} rounds each):", end=" ")
+
+    # Use a smaller timeout per DDAR check to avoid excessive total time
+    # But pass the full timeout to the function, it handles inner timeouts
+    status, aux_points, h_type, c_name = solve_with_multi_round(
+        problem, K=max_attempts, N=max_rounds, timeout=timeout_secs
+    )
+
+    if status == "heuristic":
+        rounds = len(aux_points)
+        # If solved in round 1 (1 aux point added), rounds=1.
+        # If solved before adding any points (should be caught by Step 1), rounds=0.
+        # But solve_with_multi_round logic:
+        # Loop N times.
+        # Round 0: Run DDAR (0 aux). If solved -> rounds=0.
+        # But we already ran DDAR in Step 1.
+        # So solve_with_multi_round likely returns rounds=0 if immediate solve.
+        # Wait, if step 1 failed, solve_with_multi_round's first DDAR check (round 0) might also fail.
+        # Then it adds 1 point. Next check is round 1 check.
+        # If that solves, aux_points has 1 element.
+
+        print(f"SOLVED (Rounds: {rounds}, {h_type})")
+        result["status"] = "heuristic"
+        result["heuristic_type"] = h_type
+        result["candidate_name"] = c_name  # The LAST added point
+        result["rounds_needed"] = rounds
+        result["aux_points"] = aux_points
+        return result
+
+    print("UNSOLVED")
+    return result
+
+
+problems_with_aux = {}
+
+
+def run_test_suite(quick=False, hard=False, rounds=6, attempts=50):
+    """Run the complete test suite."""
+    start_time = time.time()
+
+    # Combine all problems
+    all_problems = {**problems_without_aux, **problems_with_aux}
+    timeout_secs = 30.0
+
+    if quick:
+        # Only run first 5 problems
+        all_problems = dict(list(all_problems.items())[:5])
+        print("Running in QUICK mode (first 5 problems only)")
+    elif hard:
+        # Run only hard problems with higher K
+        if hard_problems:
+            all_problems = hard_problems
+            # attempts = 50 # Removed override, use CLI arg
+            timeout_secs = 60.0
+            print(
+                f"Running in HARD mode ({len(all_problems)} difficult problems, K={attempts}, N={rounds})"
+            )
+
+        else:
+            print(
+                "WARNING: No hard problems defined yet. Run full suite first to identify them."
+            )
+            print("Running all problems instead...")
+
+    print(
+        f"\nRunning {len(all_problems)} problems (Rounds={rounds}, Attempts={attempts})..."
+    )
+    print("=" * 70)
+
+    results = []
+    for name, pstring in all_problems.items():
+        result = solve_problem(
+            name,
+            pstring,
+            max_attempts=attempts,
+            max_rounds=rounds,
+            timeout_secs=timeout_secs,
+        )
+        results.append(result)
+
+    # Summary
+    elapsed = time.time() - start_time
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+
+    total = len(results)
+    solved_by_ddar = sum(1 for r in results if r["status"] == "ddar")
+    solved_by_heuristic = sum(1 for r in results if r["status"] == "heuristic")
+    unsolved = sum(1 for r in results if r["status"] == "unsolved")
+
+    # Count heuristic types
+    h1_count = sum(1 for r in results if r["heuristic_type"] == "H1")
+    h2_count = sum(1 for r in results if r["heuristic_type"] == "H2")
+    h3_count = sum(1 for r in results if r["heuristic_type"] == "H3")
+    h4_count = sum(1 for r in results if r["heuristic_type"] == "H4")
+    h5_count = sum(1 for r in results if r["heuristic_type"] == "H5")
+
+    # Calculate average rounds
+    heuristic_solves = [r for r in results if r["status"] == "heuristic"]
+    avg_rounds = 0
+    round_counts = {}
+    if heuristic_solves:
+        total_rounds = sum(r["rounds_needed"] for r in heuristic_solves)
+        avg_rounds = total_rounds / len(heuristic_solves)
+
+        for r in heuristic_solves:
+            rnd = r["rounds_needed"]
+            round_counts[rnd] = round_counts.get(rnd, 0) + 1
+
+    print(f"\nTotal problems attempted:     {total}")
+    print(f"Solved by DDAR alone:         {solved_by_ddar}")
+    print(f"Solved by heuristic:          {solved_by_heuristic}")
+    if solved_by_heuristic > 0:
+        most_frequent_round = max(round_counts, key=round_counts.get)
+        print(f"  - Avg rounds needed:        {avg_rounds:.2f}")
+        print(
+            f"  - Most frequent round:      {most_frequent_round} (count: {round_counts[most_frequent_round]})"
+        )
+        print(f"  - Round distribution:       {dict(sorted(round_counts.items()))}")
+        print(f"  - H1 (line-line):           {h1_count}")
+        print(f"  - H2 (line-circle):         {h2_count}")
+        print(f"  - H3 (midpoints):           {h3_count}")
+        print(f"  - H4 (reflections):         {h4_count}")
+        print(f"  - H5 (feet):                {h5_count}")
+    print(f"Unsolved:                     {unsolved}")
+    print(f"\nTotal wall-clock time:        {elapsed:.2f}s")
+    print("=" * 70)
+
+    # Print details for heuristic solves
+    if heuristic_solves:
+        print("\nProblems solved by heuristics:")
+        for r in heuristic_solves:
+            print(
+                f"  - {r['name']}: {r['heuristic_type']} ({r['candidate_name']}) in {r['rounds_needed']} rounds"
+            )
+            print(f"    Path: {' -> '.join(r['aux_points'])}")
+
+    print()
 
 
 if __name__ == "__main__":
-    # Easier problems that can be solved without auxiliary points.
-    print(explanation_without_aux)
-    print_problem_and_solve(problems_without_aux)
+    parser = argparse.ArgumentParser(description="Run AlphaGeometry2 test suite")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run only first 5 problems for fast iteration",
+    )
+    parser.add_argument(
+        "--hard",
+        action="store_true",
+        help="Run only hard problems with K=50 (requires hard_problems to be populated)",
+    )
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=6,
+        help="Number of rounds of auxiliary point addition (N)",
+    )
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=50,
+        help="Number of attempts (K)",
+    )
+    args = parser.parse_args()
 
-    # Harder problems supplemented by auxiliary points found by a language model.
-    print(explanation_with_aux)
-    print_problem_and_solve(problems_with_aux)
+    run_test_suite(
+        quick=args.quick, hard=args.hard, rounds=args.rounds, attempts=args.attempts
+    )

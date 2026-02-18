@@ -18,7 +18,7 @@
 import itertools
 import numericals as ng
 import heuri_math as hm
-from parse import AGPoint
+from parse import AGPoint, AGPredicate
 
 
 def get_heuristic_candidates(points, defined_lines, defined_circles):
@@ -31,14 +31,17 @@ def get_heuristic_candidates(points, defined_lines, defined_circles):
         defined_circles: List of FormalCircle objects from DDAR (existing circles).
 
     Returns:
-        A list of new AGPoint candidates that satisfy the non-trivial incidence condition.
+        A list of tuples (AGPoint, list[AGPredicate]) for new candidates.
     """
-    candidates = []
+    candidates = []  # List of (AGPoint, [AGPredicate])
     existing_pos = [p.value for p in points]
 
     def is_new(p_val):
         for ep in existing_pos:
             if ng.distance(p_val, ep) < 1e-4:
+                return False
+        for c, _ in candidates:
+            if ng.distance(p_val, c.value) < 1e-4:
                 return False
         return True
 
@@ -56,6 +59,37 @@ def get_heuristic_candidates(points, defined_lines, defined_circles):
                     return True
         return False
 
+    # H1: Intersection of multiple lines
+    for line1, line2 in itertools.combinations(defined_lines, 2):
+        inter = ng.intersect_ll(line1.value, line2.value)
+        if inter is None:
+            continue
+
+        parents = {pt.name for pt in line1.points} | {pt.name for pt in line2.points}
+
+        supporting_lines = [
+            l
+            for l in defined_lines
+            if l != line1 and l != line2 and l.value.distance(inter) < 1e-4
+        ]
+        if len(supporting_lines) == 0:
+            continue
+
+        if is_new(inter) and check_nontrivial_incidence(inter, parents):
+            name = f"H_inter_LL_{len(candidates)}"
+            pt = AGPoint(name, inter)
+
+            # Predicates: collinearity with defining lines
+            preds = []
+            # Take 2 points from line1 to define it
+            l1_pts = line1.points[:2]
+            preds.append(AGPredicate("coll", [pt, l1_pts[0], l1_pts[1]], []))
+
+            l2_pts = line2.points[:2]
+            preds.append(AGPredicate("coll", [pt, l2_pts[0], l2_pts[1]], []))
+
+            candidates.append((pt, preds))
+
     # H3: Midpoints
     for p1, p2 in itertools.combinations(points, 2):
         mid = ng.midpoint(p1.value, p2.value)
@@ -63,7 +97,12 @@ def get_heuristic_candidates(points, defined_lines, defined_circles):
 
         if is_new(mid) and check_nontrivial_incidence(mid, parents):
             name = f"H_mid_{p1.name}_{p2.name}"
-            candidates.append(AGPoint(name, mid))
+            pt = AGPoint(name, mid)
+            preds = [
+                AGPredicate("coll", [pt, p1, p2], []),
+                AGPredicate("cong", [pt, p1, pt, p2], []),
+            ]
+            candidates.append((pt, preds))
 
     # H4: Reflections
     for p1 in points:
@@ -75,13 +114,18 @@ def get_heuristic_candidates(points, defined_lines, defined_circles):
 
             if is_new(ref) and check_nontrivial_incidence(ref, parents):
                 name = f"H_ref_{p1.name}_{p2.name}"
-                candidates.append(AGPoint(name, ref))
+                pt = AGPoint(name, ref)
+                # Ref of p1 wrt p2 => p2 is midpoint of p1, ref
+                preds = [
+                    AGPredicate("coll", [p1, p2, pt], []),
+                    AGPredicate("cong", [p1, p2, p2, pt], []),
+                ]
+                candidates.append((pt, preds))
 
     # H5: Feet of Perpendiculars
     for p in points:
         for line in defined_lines:
             foot = hm.foot_of_perpendicular(p.value, line.value)
-
             line_parent_names = {x.name for x in line.points}
             parents = line_parent_names.union({p.name})
 
@@ -89,13 +133,19 @@ def get_heuristic_candidates(points, defined_lines, defined_circles):
                 sorted_line_parents = sorted(list(line_parent_names))
                 line_str = "_".join(sorted_line_parents[:2])
                 name = f"H_foot_{p.name}_on_{line_str}"
-                candidates.append(AGPoint(name, foot))
+                pt = AGPoint(name, foot)
+
+                l_pts = line.points[:2]
+                preds = [
+                    AGPredicate("coll", [pt, l_pts[0], l_pts[1]], []),
+                    AGPredicate("perp", [p, pt, l_pts[0], l_pts[1]], []),
+                ]
+                candidates.append((pt, preds))
 
     # H2: Intersections of Lines and Circles
     for line in defined_lines:
         for circle in defined_circles:
             intersections = hm.intersect_line_circle(line.value, circle.value)
-
             line_parents = {pt.name for pt in line.points}
             circle_parents = {pt.name for pt in circle.points}
             parents = line_parents.union(circle_parents)
@@ -103,6 +153,24 @@ def get_heuristic_candidates(points, defined_lines, defined_circles):
             for inter in intersections:
                 if is_new(inter) and check_nontrivial_incidence(inter, parents):
                     name = f"H_inter_LC_{len(candidates)}"
-                    candidates.append(AGPoint(name, inter))
+                    pt = AGPoint(name, inter)
+
+                    l_pts = line.points[:2]
+                    # Circle definition is trickier, depends on how it was constructed.
+                    # FormalCircle has .defining_points and .centers
+                    # We need to express "pt is on circle".
+                    # Simplest: distance to center equals radius.
+                    # But radius might not be explicit.
+                    # Use defining points: cong(center, pt, center, defining_point_0)
+                    preds = [AGPredicate("coll", [pt, l_pts[0], l_pts[1]], [])]
+
+                    if circle.centers and circle.defining_points:
+                        center = circle.centers[0]
+                        p_on_circ = circle.defining_points[0]
+                        preds.append(
+                            AGPredicate("cong", [center, pt, center, p_on_circ], [])
+                        )
+
+                    candidates.append((pt, preds))
 
     return candidates

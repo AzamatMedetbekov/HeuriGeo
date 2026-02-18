@@ -116,10 +116,11 @@ if __name__ == "__main__":
 
     if candidates:
         print(f"\n   Candidate details:")
-        for i, cand in enumerate(candidates[:10]):  # Show first 10
+        for i, (cand, preds) in enumerate(candidates[:10]):  # Show first 10
             print(
                 f"     {i + 1}. {cand.name}: ({cand.value[0]:.6f}, {cand.value[1]:.6f})"
             )
+            print(f"        Predicates: {[str(p) for p in preds]}")
 
         if len(candidates) > 10:
             print(f"     ... and {len(candidates) - 10} more")
