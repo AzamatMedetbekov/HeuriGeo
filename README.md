@@ -1,28 +1,32 @@
-# Gold-medalist Performance in Solving Olympiad Geometry with AlphaGeometry2
+# AlphaGeometry2 with HAGeo Heuristics Extension
 
-We present AlphaGeometry2, a significantly improved version of AlphaGeometry
-introduced in [Trinh et al. (2024)](https://www.nature.com/articles/s41586-023-06747-5),
-which has now surpassed an average gold medalist in solving Olympiad geometry
-problems.
+This repository extends the [AlphaGeometry2](https://www.jmlr.org/papers/v26/25-1654.html) symbolic theorem prover with **HAGeo heuristics** — a rule-based auxiliary point generation system inspired by human geometric intuition.
 
-**Update (Jan 2026):** The AG2 paper is published in [JMLR](https://www.jmlr.org/papers/v26/25-1654.html).
+## Overview
 
-This repository contains code necessary to reproduce solving some olympiad
-geometry problems (for example, IMO 2005 P1, IMO 2008 P6, IMO 2013 P3 and
-others).
-This is done by running the symbolic part of AlphaGeometry2 system called DDAR.
-DDAR runs on problems formalized into the AlphaGeometry2 language and
-supplemented by the point coordinates. Some problems can be solved by DDAR
-alone and others require auxiliary points provided by a language model.
+**Base System**: AlphaGeometry2 (AG2) — Gold-medalist level geometry prover by [Chervonyi et al. (2025)](https://www.jmlr.org/papers/v26/25-1654.html)  
+**Extension**: HAGeo Heuristics — Automated auxiliary point generation without LLMs
+
+The original AG2 uses a language model to suggest auxiliary points for difficult problems. This extension adds a deterministic, rule-based alternative that generates candidate points using classic geometric constructions (midpoints, reflections, perpendicular feet).
+
+## Key Enhancements
+
+### HAGeo Heuristics Module
+- **`hageo_heuristics.py`**: Implements H3, H4, H5 heuristics from the HAGeo framework
+  - **H3**: Midpoints of point pairs
+  - **H4**: Reflections of points w.r.t. other points  
+  - **H5**: Feet of perpendiculars from points to lines
+- **`hageo_math.py`**: Core geometric operations (reflections, projections, intersections)
+
+### Try-Fail-Retry Loop
+The test suite now implements an automated loop:
+1. **Try**: Attempt proof with base DDAR
+2. **Fail**: If stuck, generate auxiliary point candidates
+3. **Retry**: Try each candidate (up to 10) until proof succeeds
 
 ## Installation
 
-Installation is done in a virtual environment:
-
-```
-$ sudo apt install python3
-$ sudo apt install python3-pip
-$ sudo apt install python3-venv
+```bash
 $ python3 -m venv ag2
 $ source ag2/bin/activate
 $ pip install numpy
@@ -30,103 +34,48 @@ $ pip install numpy
 
 ## Usage
 
-Command below runs the prover on some IMO problems solved by AlphaGeometry2:
+Run the prover on IMO problems:
 
-```
+```bash
 $ python -m test
 ```
 
-You will see the following output:
+The output shows:
+- Problems solved by DDAR alone
+- Problems solved with HAGeo auxiliary points (if found)
+- Number of candidate points generated per problem
+
+## Architecture
 
 ```
-We run the logical core DDAR on some easier IMO problems that can be solved by DDAR alone.
-
-Problem: 2000_p1
-..... Proven :-)
-
-Problem: 2002_p2a
-.... Proven :-)
-
-Problem: 2002_p2b
-.... Proven :-)
-
-Problem: 2003_p4
-... Proven :-)
-
-Problem: 2004_p5
-... Proven :-)
-
-Problem: 2005_p5
-...... Proven :-)
-
-Problem: 2007_p4
-.... Proven :-)
-
-Problem: 2010_p4
-.... Proven :-)
-
-Problem: 2012_p1
-...... Proven :-)
-
-Problem: 2013_p4
-..... Proven :-)
-
-Problem: 2014_p4
-.... Proven :-)
-
-Problem: 2015_p4
-... Proven :-)
-
-Problem: 2016_p1
-..... Proven :-)
-
-Problem: 2017_p4
-..... Proven :-)
-
-Problem: 2022_p4
-..... Proven :-)
-
-
-We run the logical core DDAR on some challenging IMO problems, with manually provided
-auxiliary points. This is not a full AlphaGeometry system, only a test of the logical core.
-
-Problem: 2001_p5a
-......... Proven :-)
-
-Problem: 2003_p4b
-..... Proven :-)
-
-Problem: 2005_p1
-...... Proven :-)
-
-Problem: 2008_p1b
-........ Proven :-)
-
-Problem: 2008_p6
-...... Proven :-)
-
-Problem: 2009_p4a
-..... Proven :-)
-
-Problem: 2009_p4b
-...... Proven :-)
-
-Problem: 2011_p6
-...... Proven :-)
-
-Problem: 2013_p3
-....... Proven :-)
-
-Problem: 2019_p2
-.... Proven :-)
-
-Problem: 2021_p3
-......... Proven :-)
+DDAR (Deductive Database Algebraic Reasoning)
+├── ddar.py              — Main logical engine
+├── elimination.py       — Gaussian elimination systems
+├── numericals.py        — Euclidean geometry primitives
+├── parse.py             — Problem format parser
+├── hageo_heuristics.py  — Auxiliary point generator (NEW)
+├── hageo_math.py        — Geometric operations (NEW)
+└── test.py              — IMO problem test suite
 ```
 
-## Citing this work
+## How It Works
 
-Please cite this work as:
+When DDAR cannot prove a theorem:
+
+1. **Generate Candidates**: `get_hageo_candidates()` scans the current geometry and proposes:
+   - Midpoints (H3): For any two points A, B → candidate point at (A+B)/2
+   - Reflections (H4): For point P w.r.t. center C → candidate at 2C - P
+   - Perpendicular Feet (H5): From point P to line L → orthogonal projection
+
+2. **Non-Trivial Filtering**: Candidates must land on existing lines or circles (not coincident with construction parents)
+
+3. **K-Attempts**: Try up to 10 shuffled candidates, running full DDAR closure each time
+
+4. **Success**: If any candidate enables the proof, report the auxiliary point used
+
+## Original Paper
+
+This work extends the AlphaGeometry2 system described in:
 
 ```
 @article{chervonyi2025gold,
@@ -140,23 +89,10 @@ Please cite this work as:
 }
 ```
 
-## License and disclaimer
+## License
 
-Copyright 2025 Google LLC
+Copyright 2025-2026 Google LLC
 
-All software is licensed under the Apache License, Version 2.0 (Apache 2.0);
-you may not use this file except in compliance with the Apache 2.0 license.
-You may obtain a copy of the Apache 2.0 license at:
-https://www.apache.org/licenses/LICENSE-2.0
-
-All other materials are licensed under the Creative Commons Attribution 4.0
-International License (CC-BY). You may obtain a copy of the CC-BY license at:
-https://creativecommons.org/licenses/by/4.0/legalcode
-
-Unless required by applicable law or agreed to in writing, all software and
-materials distributed here under the Apache 2.0 or CC-BY licenses are
-distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
-either express or implied. See the licenses for the specific language governing
-permissions and limitations under those licenses.
+Licensed under the Apache License, Version 2.0.
 
 This is not an official Google product.
