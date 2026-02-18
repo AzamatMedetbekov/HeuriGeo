@@ -381,61 +381,34 @@ class DDAR:
                     if orient == 0:
                         continue
                     count += 1
-
-                    # HAGeo Fast Angle Optimization (Section 4.3):
-                    # Use cached direction values directly instead of computing angle differences
-                    # This avoids creating new FormalAngle objects for comparison
-                    dir_ab = self.direction_cache[a, b]
-                    dir_ac = self.direction_cache[a, c]
-                    dir_bc = self.direction_cache[b, c]
-                    dir_ba = self.direction_cache[b, a]
-                    dir_ca = self.direction_cache[c, a]
-                    dir_cb = self.direction_cache[c, b]
-
-                    # Compute ratios for SSS/SAS checks
                     rat1 = self.get_dist_ratio(a, b, a, c)
+                    ang1 = self.get_point_angle(a, b, a, c)
                     rat2 = self.get_dist_ratio(c, b, c, a)
+                    ang2 = self.get_point_angle(c, b, c, a)
 
-                    # SSS: Check side ratios directly
                     if (rat1, rat2) in sss:
-                        (a0, b0, c0), _ = sss[rat1, rat2]
+                        (a0, b0, c0), (_, _) = sss[rat1, rat2]
                         similar_pairs.append(((a0, b0, c0), (a, b, c)))
                     else:
                         sss[rat1, rat2] = (a, b, c), (rat1, rat2)
 
-                    # HAGeo Optimized AA Check:
-                    # Instead of computing internal angles (ang1, ang2), use the shape hash
-                    # which is the tuple of direction differences.
-                    # Two triangles are similar if their corresponding direction differences match.
-                    # This is faster because we avoid FormalAngle arithmetic.
-                    shape_hash = (dir_ac - dir_ab, dir_bc - dir_ab)
-
-                    if shape_hash in aa:
-                        (a0, b0, c0), _ = aa[shape_hash]
+                    if (ang1, ang2) in aa:
+                        (a0, b0, c0), (_, _) = aa[ang1, ang2]
                         similar_pairs.append(((a0, b0, c0), (a, b, c)))
                     else:
-                        aa[shape_hash] = (a, b, c), shape_hash
-                        # Store reverse orientation for mirror matches
-                        rev_hash = (dir_ab - dir_ac, dir_ab - dir_bc)
-                        aa[rev_hash] = (a, b, c), rev_hash
+                        aa[ang1, ang2] = (a, b, c), (ang1, ang2)
+                        aa[-ang1, -ang2] = (a, b, c), (-ang1, -ang2)
 
-                    # SAS: Use direction difference directly for the included angle at A
-                    ang_a = dir_ac - dir_ab
-                    if (ang_a, rat1, orient) in sas:
-                        (a0, b0, c0), _ = sas[ang_a, rat1, orient]
+                    if (ang1, rat1, orient) in sas:
+                        (a0, b0, c0), (_, _) = sas[ang1, rat1, orient]
                         similar_pairs.append(((a0, b0, c0), (a, b, c)))
                     else:
-                        sas[ang_a, rat1, orient] = (a, b, c), (ang_a, rat1)
-                        sas[-ang_a, rat1, -orient] = (a, b, c), (-ang_a, rat1)
-
-                    # SSA Check: Requires computing angle at B and C
-                    # For SSA we still need the angle values
-                    ang_b = dir_ba - dir_bc
-                    ang_c = dir_ca - dir_cb
+                        sas[ang1, rat1, orient] = (a, b, c), (ang1, rat1)
+                        sas[-ang1, rat1, -orient] = (a, b, c), (-ang1, rat1)
 
                     for a1, b1, c1, ang, rat, cur_orient in (
-                        (a, b, c, ang_b, rat2, orient),
-                        (c, b, a, ang_c, rat1, -orient),
+                        (a, b, c, ang1, rat2, orient),
+                        (c, b, a, ang2, rat1, -orient),
                     ):
                         if (
                             ng.distance(c1.value, b1.value)
@@ -446,7 +419,7 @@ class DDAR:
                                 continue
                             ssa_triangles.add((a1, b1, c1))
                             if (ang, rat, cur_orient) in ssa:
-                                (a0, b0, c0), _ = ssa[ang, rat, cur_orient]
+                                (a0, b0, c0), (_, _) = ssa[ang, rat, cur_orient]
                                 similar_pairs.append(((a0, b0, c0), (a1, b1, c1)))
                             else:
                                 ssa[ang, rat, cur_orient] = (a1, b1, c1), (ang, rat)
