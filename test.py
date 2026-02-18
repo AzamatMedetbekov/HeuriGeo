@@ -488,8 +488,69 @@ auxiliary points. This is not a full AlphaGeometry system, only a test of the lo
 """
 
 
+def score_candidate(ddar, candidate, problem_points):
+    """
+    Score a candidate based on its potential geometric utility.
+    Higher scores indicate candidates more likely to lead to a proof.
+    """
+    score = 0
+
+    # 1. Prefer candidates that land on multiple existing geometric objects
+    lines_hit = sum(
+        1 for line in ddar.lines if line.value.distance(candidate.value) < 1e-4
+    )
+    circles_hit = sum(
+        1 for circle in ddar.circles if circle.value.distance(candidate.value) < 1e-4
+    )
+    score += (lines_hit + circles_hit) * 10  # Being on multiple objects is valuable
+
+    # 2. Prefer candidates that create new collinearities
+    for line in ddar.lines:
+        if line.value.distance(candidate.value) < 1e-4:
+            # Check if candidate is between existing points on this line
+            for i, p1 in enumerate(line.points):
+                for p2 in line.points[i + 1 :]:
+                    if (
+                        p1.value[0] < candidate.value[0] < p2.value[0]
+                        or p2.value[0] < candidate.value[0] < p1.value[0]
+                    ):
+                        score += 5  # Betweenness is often useful
+
+    # 3. Prefer candidates with heuristic type priority
+    if "H_mid" in candidate.name:
+        score += 3  # Midpoints are often useful
+    elif "H_inter_LC" in candidate.name:
+        score += 4  # Line-circle intersections create new relationships
+    elif "H_foot" in candidate.name:
+        score += 2  # Perpendicular feet
+    elif "H_ref" in candidate.name:
+        score += 1  # Reflections
+
+    return score
+
+
+def filter_redundant_candidates(candidates, existing_points, min_dist=1e-4):
+    """Filter out candidates that are too close to existing points or each other."""
+    filtered = []
+    seen_positions = [p.value for p in existing_points]
+
+    for cand in candidates:
+        is_redundant = False
+        for pos in seen_positions:
+            if ng.distance(cand.value, pos) < min_dist:
+                is_redundant = True
+                break
+        if not is_redundant:
+            filtered.append(cand)
+            seen_positions.append(cand.value)
+
+    return filtered
+
+
 def print_problem_and_solve(problems_dict: dict[str, str]) -> None:
     """Prints problem ID and its proving status."""
+    import random
+
     for name, pstring in problems_dict.items():
         print(f"Problem: {name}")
 
@@ -508,38 +569,105 @@ def print_problem_and_solve(problems_dict: dict[str, str]) -> None:
 
         print("  Base failed. Running HAGeo Heuristics...")
 
-        # 2. Generate Candidates based on the geometry found so far
-        # We pass ddar.lines and ddar.circles so we can check if points land on them
-        candidates = get_hageo_candidates(problem.points, ddar.lines, ddar.circles)
-        print(f"  Generated {len(candidates)} candidate auxiliary points.")
+        # 2. Generate and Score Candidates for Round 1
+        candidates_r1 = get_hageo_candidates(problem.points, ddar.lines, ddar.circles)
 
-        # 3. K-Attempts Loop (HAGeo Section 4.5)
+        # Filter redundant candidates
+        candidates_r1 = filter_redundant_candidates(candidates_r1, problem.points)
+
+        if not candidates_r1:
+            print("  No valid candidates generated.")
+            print()
+            continue
+
+        # Score and sort candidates by geometric utility
+        scored_candidates = [
+            (score_candidate(ddar, c, problem.points), c) for c in candidates_r1
+        ]
+        scored_candidates.sort(reverse=True)
+
+        print(f"  Generated {len(candidates_r1)} candidate auxiliary points.")
+
+        # 3. N-Rounds K-Attempts Loop (Depth-2 Search with Optimizations)
         solved = False
-        # Shuffle to simulate "Random Select" from pipeline
-        import random
+        attempted_pairs = set()  # Track attempted pairs to avoid duplicates
 
-        random.shuffle(candidates)
+        # Configurable parameters (can be tuned based on problem difficulty)
+        MAX_ROUND1 = min(10, len(scored_candidates))  # Adaptive limit
+        MAX_ROUND2 = 3  # Limit combinatorial explosion
 
-        # Try up to K=10 top candidates
-        for i, new_pt in enumerate(candidates[:10]):
-            # Construct new problem state
-            new_points = problem.points + [new_pt]
+        for score1, pt1 in scored_candidates[:MAX_ROUND1]:
+            if solved:
+                break
 
+            # --- ROUND 1: Try single point ---
             try:
-                ddar_aux = DDAR(new_points)
+                ddar_r1 = DDAR(problem.points + [pt1])
                 for pred in problem.preds:
-                    ddar_aux.force_pred(pred)
-                ddar_aux.deduction_closure(progress_dot=False)
+                    ddar_r1.force_pred(pred)
+                ddar_r1.deduction_closure(progress_dot=False)
 
-                if ddar_aux.check_pred(problem.goal):
-                    print(f"  Proven with auxiliary point: {new_pt.name} :-)")
+                if ddar_r1.check_pred(problem.goal):
+                    print(
+                        f"  Proven with 1 auxiliary point: {pt1.name} (score: {score1}) :-)"
+                    )
                     solved = True
                     break
+
+                # --- ROUND 2: If Round 1 fails, go deeper ---
+                # Generate new candidates based on geometry discovered in Round 1
+                candidates_r2 = get_hageo_candidates(
+                    problem.points + [pt1], ddar_r1.lines, ddar_r1.circles
+                )
+
+                # Filter: must be new compared to Round 1 candidates
+                candidates_r2 = filter_redundant_candidates(
+                    candidates_r2, problem.points + [pt1]
+                )
+
+                if not candidates_r2:
+                    continue
+
+                # Score Round 2 candidates in context of Round 1
+                scored_r2 = [
+                    (score_candidate(ddar_r1, c, problem.points + [pt1]), c)
+                    for c in candidates_r2
+                ]
+                scored_r2.sort(reverse=True)
+
+                # Try top candidates in Round 2
+                for score2, pt2 in scored_r2[:MAX_ROUND2]:
+                    # Skip if this pair was already attempted
+                    pair_key = tuple(sorted([pt1.name, pt2.name]))
+                    if pair_key in attempted_pairs:
+                        continue
+                    attempted_pairs.add(pair_key)
+
+                    try:
+                        # Optimization: Build on Round 1 state instead of recomputing
+                        points_r2 = problem.points + [pt1, pt2]
+                        ddar_r2 = DDAR(points_r2)
+                        for pred in problem.preds:
+                            ddar_r2.force_pred(pred)
+                        ddar_r2.deduction_closure(progress_dot=False)
+
+                        if ddar_r2.check_pred(problem.goal):
+                            print(
+                                f"  Proven with 2 auxiliary points: {pt1.name} (score: {score1}) and {pt2.name} (score: {score2}) :-)"
+                            )
+                            solved = True
+                            break
+
+                    except Exception:
+                        continue  # Skip unstable configurations
+
             except Exception:
-                continue  # Skip unstable points
+                continue  # Skip unstable configurations
 
         if not solved:
-            print("  Failed after heuristic attempts.")
+            print(
+                f"  Failed after Depth-2 search (attempted {len(attempted_pairs)} unique pairs)."
+            )
         print()
 
 
