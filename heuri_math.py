@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Geometric operations for HAGeo heuristics (Reflections, Projections, Intersections)."""
+"""Geometric operations for heuristic extension (Reflections, Projections, Intersections)."""
 
 import numpy as np
 import numericals as ng

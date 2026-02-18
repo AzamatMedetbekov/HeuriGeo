@@ -17,7 +17,7 @@
 
 from ddar import DDAR
 from parse import AGProblem
-from hageo_heuristics import get_hageo_candidates
+from heuri_heuristics import get_heuristic_candidates
 
 problems_without_aux = {
     "2000_p1": (

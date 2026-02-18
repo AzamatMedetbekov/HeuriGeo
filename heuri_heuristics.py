@@ -13,17 +13,17 @@
 # limitations under the License.
 # ==============================================================================
 
-"""HAGeo Heuristics Implementation."""
+"""Heuristic Extension Implementation for auxiliary point generation."""
 
 import itertools
 import numericals as ng
-import hageo_math as hm
+import heuri_math as hm
 from parse import AGPoint
 
 
-def get_hageo_candidates(points, defined_lines, defined_circles):
+def get_heuristic_candidates(points, defined_lines, defined_circles):
     """
-    Generates auxiliary points based on HAGeo heuristics (H3, H4, H5).
+    Generates auxiliary points based on rule-based heuristics (H2, H3, H4, H5).
 
     Args:
         points: List of AGPoint objects (existing points).
@@ -90,5 +90,19 @@ def get_hageo_candidates(points, defined_lines, defined_circles):
                 line_str = "_".join(sorted_line_parents[:2])
                 name = f"H_foot_{p.name}_on_{line_str}"
                 candidates.append(AGPoint(name, foot))
+
+    # H2: Intersections of Lines and Circles
+    for line in defined_lines:
+        for circle in defined_circles:
+            intersections = hm.intersect_line_circle(line.value, circle.value)
+
+            line_parents = {pt.name for pt in line.points}
+            circle_parents = {pt.name for pt in circle.points}
+            parents = line_parents.union(circle_parents)
+
+            for inter in intersections:
+                if is_new(inter) and check_nontrivial_incidence(inter, parents):
+                    name = f"H_inter_LC_{len(candidates)}"
+                    candidates.append(AGPoint(name, inter))
 
     return candidates

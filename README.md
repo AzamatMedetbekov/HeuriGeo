@@ -1,22 +1,23 @@
-# AlphaGeometry2 with HAGeo Heuristics Extension
+# AlphaGeometry2 with Heuristic Extension
 
-This repository extends the [AlphaGeometry2](https://www.jmlr.org/papers/v26/25-1654.html) symbolic theorem prover with **HAGeo heuristics** — a rule-based auxiliary point generation system inspired by human geometric intuition.
+This repository extends the [AlphaGeometry2](https://www.jmlr.org/papers/v26/25-1654.html) symbolic theorem prover with a **rule-based heuristic extension** for auxiliary point generation inspired by human geometric intuition.
 
 ## Overview
 
 **Base System**: AlphaGeometry2 (AG2) — Gold-medalist level geometry prover by [Chervonyi et al. (2025)](https://www.jmlr.org/papers/v26/25-1654.html)  
-**Extension**: HAGeo Heuristics — Automated auxiliary point generation without LLMs
+**Extension**: Rule-Based Heuristics — Automated auxiliary point generation without LLMs
 
 The original AG2 uses a language model to suggest auxiliary points for difficult problems. This extension adds a deterministic, rule-based alternative that generates candidate points using classic geometric constructions (midpoints, reflections, perpendicular feet).
 
 ## Key Enhancements
 
-### HAGeo Heuristics Module
-- **`hageo_heuristics.py`**: Implements H3, H4, H5 heuristics from the HAGeo framework
+### Heuristic Extension Module
+- **`heuri_heuristics.py`**: Implements H2, H3, H4, H5 heuristics
+  - **H2**: Intersections of lines and circles
   - **H3**: Midpoints of point pairs
-  - **H4**: Reflections of points w.r.t. other points  
+  - **H4**: Reflections of points w.r.t. other points
   - **H5**: Feet of perpendiculars from points to lines
-- **`hageo_math.py`**: Core geometric operations (reflections, projections, intersections)
+- **`heuri_math.py`**: Core geometric operations (reflections, projections, intersections)
 
 ### Try-Fail-Retry Loop
 The test suite now implements an automated loop:
@@ -42,7 +43,7 @@ $ python -m test
 
 The output shows:
 - Problems solved by DDAR alone
-- Problems solved with HAGeo auxiliary points (if found)
+- Problems solved with heuristic auxiliary points (if found)
 - Number of candidate points generated per problem
 
 ## Architecture
@@ -53,8 +54,8 @@ DDAR (Deductive Database Algebraic Reasoning)
 ├── elimination.py       — Gaussian elimination systems
 ├── numericals.py        — Euclidean geometry primitives
 ├── parse.py             — Problem format parser
-├── hageo_heuristics.py  — Auxiliary point generator (NEW)
-├── hageo_math.py        — Geometric operations (NEW)
+├── heuri_heuristics.py  — Auxiliary point generator (NEW)
+├── heuri_math.py        — Geometric operations (NEW)
 └── test.py              — IMO problem test suite
 ```
 
@@ -62,7 +63,8 @@ DDAR (Deductive Database Algebraic Reasoning)
 
 When DDAR cannot prove a theorem:
 
-1. **Generate Candidates**: `get_hageo_candidates()` scans the current geometry and proposes:
+1. **Generate Candidates**: `get_heuristic_candidates()` scans the current geometry and proposes:
+   - Line-Circle Intersections (H2): Intersection points of existing lines and circles
    - Midpoints (H3): For any two points A, B → candidate point at (A+B)/2
    - Reflections (H4): For point P w.r.t. center C → candidate at 2C - P
    - Perpendicular Feet (H5): From point P to line L → orthogonal projection
